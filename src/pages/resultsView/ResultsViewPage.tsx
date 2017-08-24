@@ -1,5 +1,6 @@
 import * as React from 'react';
-import {observer, inject } from "mobx-react";
+import * as _ from 'lodash';
+import {observer, inject, Observer} from "mobx-react";
 import {reaction, computed} from "mobx";
 import validateParameters from 'shared/lib/validateParameters';
 import ValidationAlert from "shared/components/ValidationAlert";
@@ -8,7 +9,7 @@ import exposeComponentRenderer from 'shared/lib/exposeComponentRenderer';
 import {ResultsViewPageStore, SamplesSpecificationElement} from "./ResultsViewPageStore";
 import Mutations from "./mutation/Mutations";
 import {stringListToSet} from "../../shared/lib/StringUtils";
-import _ from "lodash";
+import MutualExclusivityTab from "./mutualExclusivity/MutualExclusivityTab";
 
 const resultsViewPageStore = new ResultsViewPageStore();
 
@@ -66,6 +67,11 @@ export default class ResultsViewPage extends React.Component<IResultsViewPagePro
         // );
     }
 
+    componentDidMount(){
+
+
+    }
+
     public exposeComponentRenderersToParentScript(){
 
         exposeComponentRenderer('renderMutationsTab',
@@ -80,7 +86,62 @@ export default class ResultsViewPage extends React.Component<IResultsViewPagePro
                     />
                     <Mutations genes={props.genes} store={resultsViewPageStore}/>
                 </div>
-            });
+        });
+
+        exposeComponentRenderer('renderMutExTab', () => {
+
+            const qSession:any = (window as any).QuerySession;
+
+            var props:any = {
+                genes: qSession.getQueryGenes()
+            };
+
+            var samplesSpecification: any = [];
+            if (["-1", "all"].indexOf(qSession.getCaseSetId()) > -1) {
+                // "-1" means custom case id, "all" means all cases in the queried stud(y/ies). Neither is an actual case set that could eg be queried
+                var studyToSampleMap = qSession.getStudySampleMap();
+                var studies = Object.keys(studyToSampleMap);
+                for (var i=0; i<studies.length; i++) {
+                    var study: any = studies[i];
+                    samplesSpecification = samplesSpecification.concat(studyToSampleMap[study].map(function(sampleId:any) {
+                        return {
+                            sampleId: sampleId,
+                            studyId: study
+                        };
+                    }));
+                }
+            } else {
+                //var studyToSampleListIdMap = qSession.getStudySampleListMap();
+
+                var studyToSampleListIdMap:any = {};
+                studyToSampleListIdMap[qSession.getCancerStudyIds()[0]] = qSession.getCaseSetId();
+
+
+                var studies = Object.keys(studyToSampleListIdMap);
+                for (var i=0; i<studies.length; i++) {
+                    samplesSpecification.push({
+                        sampleListId: studyToSampleListIdMap[studies[i]],
+                        studyId: studies[i]
+                    });
+                }
+            }
+            resultsViewPageStore.samplesSpecification = samplesSpecification;
+
+            resultsViewPageStore.hugoGeneSymbols = qSession.getQueryGenes();
+            resultsViewPageStore.selectedMolecularProfileIds = qSession.getGeneticProfileIds();
+            resultsViewPageStore.rppaScoreThreshold = qSession.getRppaScoreThreshold();
+            resultsViewPageStore.zScoreThreshold = qSession.getZScoreThreshold();
+            resultsViewPageStore.oqlQuery = qSession.oql_query;
+
+            _.each(props.genes, (gene:string)=>resultsViewPageStore.getMutationMapperStore(gene));
+
+            return (<div>
+                <MutualExclusivityTab store={resultsViewPageStore}/>
+            </div>)
+        });
+
+
+
     }
 
     public render() {

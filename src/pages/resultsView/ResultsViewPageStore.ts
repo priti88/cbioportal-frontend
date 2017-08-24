@@ -1,6 +1,6 @@
 import {
     DiscreteCopyNumberFilter, DiscreteCopyNumberData, ClinicalData, ClinicalDataMultiStudyFilter, Sample,
-    SampleIdentifier, MolecularProfile, Mutation
+    SampleIdentifier, MolecularProfile, Mutation, GeneMolecularData, MolecularDataFilter
 } from "shared/api/generated/CBioPortalAPI";
 import client from "shared/api/cbioportalClientInstance";
 import {computed, observable, action} from "mobx";
@@ -25,9 +25,13 @@ import * as _ from 'lodash';
 import {stringListToSet} from "../../shared/lib/StringUtils";
 import {toSampleUuid} from "../../shared/lib/UuidUtils";
 import MutationDataCache from "../../shared/cache/MutationDataCache";
+import accessors from "../../shared/lib/oql/accessors";
+import {filterCBioPortalWebServiceData} from "../../shared/lib/oql/oqlfilter";
+import {keepAlive} from "mobx-utils";
 
 export type SamplesSpecificationElement = { studyId:string, sampleId:string, sampleListId:undefined } |
                                     { studyId:string, sampleId:undefined, sampleListId:string};
+
 export class ResultsViewPageStore {
 
     constructor() {
@@ -44,6 +48,145 @@ export class ResultsViewPageStore {
 
     @observable hugoGeneSymbols: string[]|null = null;
     @observable samplesSpecification:SamplesSpecificationElement[] = [];
+
+    @observable zScoreThreshold: number;
+
+    @observable rppaScoreThreshold: number;
+
+    @observable oqlQuery: string = '';
+
+    @observable selectedMolecularProfileIds: string[] = [];
+
+    readonly selectedGeneticProfiles = remoteData(() => {
+        return Promise.all(this.selectedMolecularProfileIds.map((id) => client.getMolecularProfileUsingGET({molecularProfileId: id})));
+    });
+
+    //NOTE: this can only be invoked after mutationMapperStores is populated.  not great.
+    readonly allMutations = remoteData({
+        await: () =>
+            _.flatMap(this.mutationMapperStores, (store: MutationMapperStore) => store.mutationData)
+        ,
+        invoke: async() => {
+            return _.mapValues(this.mutationMapperStores, (store: MutationMapperStore) => store.mutationData.result);
+        }
+    });
+
+    readonly geneticData = remoteData({
+        await: () => [
+            this.studyToDataQueryFilter,
+            this.genes,
+            this.selectedGeneticProfiles
+        ],
+        invoke: async() => {
+            // we get mutations with mutations endpoint, all other alterations with this one, so filter out mutation genetic profile
+            const profilesWithoutMutationProfile = _.filter(this.selectedGeneticProfiles.result, (profile: MolecularProfile) => profile.molecularAlterationType !== 'MUTATION_EXTENDED');
+            if (profilesWithoutMutationProfile) {
+                const promises:Promise<GeneMolecularData[]>[] = profilesWithoutMutationProfile.map((profile: MolecularProfile) => {
+                    const filter:MolecularDataFilter = (Object.assign(
+                            {},
+                            {
+                                entrezGeneIds:this.genes.result!.map(gene => gene.entrezGeneId)
+                            },
+                            this.studyToDataQueryFilter.result![profile.studyId]
+                        ) as MolecularDataFilter
+                    );
+                    return client.fetchAllMolecularDataInMolecularProfileUsingPOST({
+                        molecularProfileId: profile.molecularProfileId,
+                        molecularDataFilter: filter,
+                        projection: 'DETAILED'
+                    });
+                });
+                return Promise.all(promises).then((arrs: GeneMolecularData[][]) => _.concat([],...arrs));
+            } else {
+                return [];
+            }
+        }
+    });
+
+    readonly filteredAlterations = remoteData({
+        await: () => [
+            this.allMutations,
+            this.selectedGeneticProfiles,
+            this.geneticData,
+            this.defaultOQLQuery
+        ],
+        invoke: async() => {
+
+            const filteredGeneticDataByGene = _.groupBy(this.geneticData.result, (item: GeneMolecularData) => item.gene.hugoGeneSymbol);
+
+            // now merge alterations with mutations by gene
+            const mergedAlterationsByGene = _.mapValues(this.allMutations.result, (mutations: Mutation[], gene: string) => {
+                // if for some reason it doesn't exist, assign empty array;
+                return (gene in filteredGeneticDataByGene) ? _.concat(([] as (Mutation|GeneMolecularData)[]), mutations, filteredGeneticDataByGene[gene]) : [];
+            });
+            const ret = _.mapValues(mergedAlterationsByGene, (mutations: (Mutation|GeneMolecularData)[]) => {
+                return filterCBioPortalWebServiceData(this.oqlQuery, mutations, (new accessors(this.selectedGeneticProfiles.result!)), this.defaultOQLQuery.result!)
+            });
+
+            return ret;
+        }
+    });
+
+    readonly defaultOQLQuery = remoteData({
+        await: () => [this.selectedGeneticProfiles],
+        invoke: () => {
+            const all_profile_types = _.map(this.selectedGeneticProfiles.result,(profile)=>profile.molecularAlterationType);
+            var default_oql_uniq: any = {};
+            for (var i = 0; i < all_profile_types.length; i++) {
+                var type = all_profile_types[i];
+                switch (type) {
+                    case "MUTATION_EXTENDED":
+                        default_oql_uniq["MUT"] = true;
+                        default_oql_uniq["FUSION"] = true;
+                        break;
+                    case "COPY_NUMBER_ALTERATION":
+                        default_oql_uniq["AMP"] = true;
+                        default_oql_uniq["HOMDEL"] = true;
+                        break;
+                    case "MRNA_EXPRESSION":
+                        default_oql_uniq["EXP>=" + this.zScoreThreshold] = true;
+                        default_oql_uniq["EXP<=-" + this.zScoreThreshold] = true;
+                        break;
+                    case "PROTEIN_LEVEL":
+                        default_oql_uniq["PROT>=" + this.rppaScoreThreshold] = true;
+                        default_oql_uniq["PROT<=-" + this.rppaScoreThreshold] = true;
+                        break;
+                }
+            }
+            return Promise.resolve(Object.keys(default_oql_uniq).join(" "));
+        }
+
+    });
+
+    readonly filteredAlterationsAsSampleIdArrays = remoteData({
+        await: () => [
+            this.filteredAlterations
+        ],
+        invoke: async() => {
+            return _.mapValues(this.filteredAlterations.result, (mutations: Mutation[]) => _.map(mutations, 'sampleId'));
+        }
+    });
+
+    readonly isSampleAlteredMap = remoteData({
+        await: () => [this.filteredAlterationsAsSampleIdArrays, this.samples],
+        invoke: async() => {
+            return _.mapValues(this.filteredAlterationsAsSampleIdArrays.result, (sampleIds: string[]) => {
+                return this.samples.result.map((sample: Sample) => {
+                    return _.includes(sampleIds, sample.sampleId);
+                });
+            });
+        }
+    });
+
+    readonly genes = remoteData(async() => {
+        if (this.hugoGeneSymbols) {
+            return client.fetchGenesUsingPOST({
+                geneIds: this.hugoGeneSymbols.slice(),
+                geneIdType: "HUGO_GENE_SYMBOL"
+            });
+        }
+        return undefined;
+    });
 
     readonly studyToSampleIds = remoteData<{[studyId:string]:{[sampleId:string]:boolean}}>(async()=>{
         const sampleListsToQuery:{studyId:string, sampleListId:string}[] = [];
@@ -290,9 +433,9 @@ export class ResultsViewPageStore {
         }
     }, {});
 
-    @computed get mergedDiscreteCNAData():DiscreteCopyNumberData[][] {
-        return mergeDiscreteCNAData(this.discreteCNAData);
-    }
+    // @computed get mergedDiscreteCNAData():DiscreteCopyNumberData[][] {
+    //     return mergeDiscreteCNAData(this.discreteCNAData);
+    // }
 
     @cached get oncoKbEvidenceCache() {
         return new OncoKbEvidenceCache();
