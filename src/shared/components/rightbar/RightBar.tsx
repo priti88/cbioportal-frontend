@@ -124,15 +124,9 @@ export default class RightBar extends React.Component<IRightBarProps, {}> {
         return (
             <div>
                 <div className="rightBarSection">
-                    <h3>
-                        What's New
-                        <a href="http://www.twitter.com/cbioportal" className="pull-right">
-                            @cbioportal <i className="fa fa-twitter" aria-hidden="true"></i>
-                        </a>
-                    </h3>
-                    <p>Sign up for low-volume email news alerts:</p>
-                    <a target="_blank" className="btn btn-default btn-sm" href="http://groups.google.com/group/cbioportal-news/boxsubscribe" style={{width: "100%"}}>Subscribe</a>
-                </div>
+                    <p><b>Welcome to the cBioPortal @ DFCI.</b></p><ul><li><p>Data from the <a href="https://www.ncbi.nlm.nih.gov/pubmed/27339098"  target="_blank">Rapid Heme Panel</a> is now available! See the FAQs for a description of the data and variant annotation scheme. Data will be continually updated as new samples are run.</li><li><p>Registered users can now download all de-identified Profile Data.</p><form action="download_profile_data.jsp" style="margin-left: 7pt;"><input type="submit" style="font-size:10pt;color:white; background-color:#1974B8" value="Download Profile Data" /></form><li><p>~18000 samples from AACR Project GENIE Release January 2017.</p></ul><p>For any questions, please email us at:  <a href="cbioportal@jimmy.harvard.edu">cbioportal@jimmy.harvard.edu</a>.</p>
+
+            </div>
                 {datasets}
                 {examples}
                 {testimonials}
